@@ -1,0 +1,145 @@
+代码逻辑分析：
+process_clustering.py 实现聚类
+construct_adj KNN构图+高斯权重
+split_train_test.py 按分型做分层抽样切分
+distribute_pt.py 把图文件分发到 train/test 目录
+data_loader.py 把图 .pt 装成 PYG 的 HeteroData  输入维度 768（与 center_feature 的 D 一致），输出通道 128
+evaluation.py 病人级集成 + Bootstrap 置信区间
+models.py 双图 GCN（坐标拓扑 & 语义拓扑）
+train.py 训练循环与日志
+utils.py 工具库
+run.py 训练入口、配置与调度
+
+结构：
+GCN_provided/
+├─ process_clustering.py        # Step01: 聚类 → 产生 center_* .pt
+├─ construct_adj.py             # Step02: KNN 构图 → 产生 *_adj.pt
+├─ split_train_test.py          # Step03: 分层切分 → 产生 train/test CSV
+├─ distribute_pt.py             # Step04: 分发 *_adj.pt 到 train/test 目录
+├─ data_loader.py               # 读取 train/test/*.pt → HeteroData，挂 label 到 g.y
+├─ models.py                    # TwinsGCN（两分支）/分类头
+├─ train.py                     # 训练循环（损失/评估/日志/保存）
+├─ evaluation.py                # 病人级集成 + AUC + Bootstrap CI
+├─ utlis.py                     # 日志/建目录/设种子
+├─ run.py                       # 训练入口（超参/优化器/调度器/TensorBoard）
+│     
+├─ GBM/
+│  ├─ dinov2_feature/           # Patch特征（输入）
+│  ├─ clinical_data_processed.csv
+│  ├─ final_sample_id.csv
+│  └─ postdata/     
+│     ├─ adaptive_kmeans/       # Step01 输出：<sample>_rpt_*.pt  (center_corrd/center_feature)
+│     ├─ graph_structure/       # Step02 输出：<sample>_rpt_*.pt_adj.pt（两套边）
+│     └─ train_test_split/      # Step04 输出：
+│        ├─ train/              #   训练图 .pt
+│        └─ test/               #   测试图 .pt
+│
+└─ TrainProcess/
+   └─ <时间戳>/
+      ├─ <时间戳>.log           # 训练日志
+      ├─ <时间戳>.json          # 本次 run 的超参快照
+      ├─ model/
+      │  └─ model.pt            # 若 --savedisk True 才会生成（或 model_best.pt）
+      └─ tensorboard/<时间戳>/  # TensorBoard 事件文件
+
+
+整体项目运行命令：
+1. 聚类（data_loader 实现聚类 → 对应 process_clustering.py）
+python process_clustering.py
+2. KNN 构图 + 高斯权重（construct_adj）
+python construct_adj.py
+3. 按分型分层抽样切分（split_train_test.py）
+python split_train_test.py
+4. 分发图文件到 train/test 目录（distribute_pt.py）
+python distribute_pt.py
+5. 训练入口（run.py，内部会用 data_loader.py / evaluation.py / models.py / train.py / utils.py）
+python run.py 
+
+消融实验时：
+python run.py --edge_mode feature/corrd
+
+
+目前发现重点用法区别（参照个人写的版本）：
+1.data_loader.py 将.pt数据转换为 PyG 数据 标准数据结构封装
+2.构图代码上区别：
+本项目中 直接生成 <sample>_rpt_*.pt_adj.pt 一对图（特征/坐标） 而不是生成 A_feat/A_cor/A_ave 三套邻接矩阵 （重点）
+把融合滞后，在卷积池化层处理：模型里两分支各自卷积+池化后 concat 再分类 
+这样同样可以实现两条路线的运行，同时可以保留两种拓扑的“个性”并且减少参数调整
+3.标签处理方面：
+直接在 split_train_test.py 分层切分时用到一次
+之后直接在 data_loader.py 中将标签写入 g.y 中
+4.相对路径应用（值得学习）
+
+
+目前可修改点：
+1.construct_adj.py 中 k=10, sigma=0.5 参数调整
+2.data_loader.py 中 生存信息缺失
+3.run.py 中 DataLoader 写法可改用新版 torch_geometric.loader.DataLoader （非必要）
+4.run.py 中 heads 目前在 Set2SetPoolNet 未实际使用（可删除或扩展为注意力头）？（此处保留疑问）
+5.train.py 中 可根据 eval_test 的 AUC 做早停或保存最优
+6.evaluation.py 中 功能函数可以详细分析并扩展
+7.models.py 中 heads未用 （参考4） 
+8.内存泄漏警告（可以不修改）
+UserWarning: KMeans is known to have a memory leak on Windows with MKL, when there are less chunks than available threads. You can avoid it by setting the environment variable OMP_NUM_THREADS=12.
+  warnings.warn(
+Windows + MKL 下，KMeans 有个已知内存泄漏场景：当 OpenMP 线程数 > 内部分块数 时，内存会缓慢增长
+9. process_clustering.py 中反复回显导致重要信息看不到（可以不修改）      
+print(f"Shape of center_feature: {center_feature.shape}, saved to {file_path}")
+10.保存最优可以改一下
+
+
+目前改进方向：
+1.调参
+2.增加生存分析损失
+3.消融实验
+4.整体优化
+5.分类头改进
+
+
+目前已修改内容：
+1.distribute_pt.py 中添加了 .\GBM\postdata\train_test_split\train 逻辑 自动创造目录
+2.data_loader.py 中 双引号用法错误：(其他类似错误不再提及)
+print(f"Node features shape: {batch["corrd"].x.shape}")
+改为：print(f"Node features shape: {batch['corrd'].x.shape}")
+
+
+运行代码问题：
+1.强过拟合：训练 AUC→1.0，而测试 AUC 无提升
+从第 3 个 epoch 起，train AUC≈1.00，而 test AUC 常年在 0.50–0.54 左右（OvR 宏 AUC，随机基线≈0.50）
+[2025-09-10 11:27:14,744][INFO] Epoch[200/200], loss:0.1324
+[2025-09-10 11:27:14,746][INFO] Epoch[200/200], train AUC: 1.0000(1.0000-1.0000), test AUC: 0.5230(0.5958-0.6734)
+
+目前疑问：
+1.是否可以四类划分为两类，目前进行二分类采用的是只保留MP，四分二感觉效果太差
+
+
+参考yxw修改：
+# 图总变差 TV 正则化 + 学习率策略 集成说明
+
+## 1) 新增四个命令行参数（run.py）
+- `--lambda_tv`：TV 权重（默认 0 关闭）。建议先试 `1e-4, 5e-4, 1e-3, 2e-3`。
+- `--tv_norm`：TV 范数，默认 `l2sq`（稳）。也可试 `l1`。
+- `--tv_reduce`：`mean`（推荐）或 `sum`。
+- `--tv_unique`：只用无向边的一半，避免重复累计。
+
+## 2) 训练循环里加入 TV
+确保模型前向返回 `(y_pred, node_features, edge_index)`。TV 会对相连节点的特征做平滑，抑制高频噪声，提升泛化。
+
+## 3) 学习率与调度器建议（与 TV 联合）
+- 先基准：`--lr 3e-4 --scheduler None --smoothing 0.0`
+- 加余弦（按 epoch step）：`--lr 3e-4 --scheduler CosineAnnealingLR --T_max 200`
+- 有了 TV 后，可从 `--lambda_tv 1e-3` 起试（若欠拟合，再降；若依然过拟合，再升）。
+
+## 4) 一键命令示例
+python run.py --lr 3e-4 --scheduler CosineAnnealingLR --T_max 200 \
+  --lambda_tv 1e-3 --tv_norm l2sq --tv_reduce mean --smoothing 0.0
+
+# 也可以加上“降容量”的组合（需在 params_setup() 里改）
+# A: heads=4, out_chans=128 ；B: heads=8, out_chans=64；C: heads=16, out_chans=32
+
+clf_loss：纯分类损失（交叉熵/二分类 BCE 等）。反映对标签的拟合程度。
+
+tv_loss：图总变差（相邻节点嵌入差异）的平均惩罚，独立于标签，用来抑制噪声、提升泛化。
+
+loss（total）：训练真正优化的目标 total=clf+λtv ​⋅ tv  λ为可调节参数
+

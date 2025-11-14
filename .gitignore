@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# IDE
+.idea/
+.vscode/
+
+# Training outputs
+TrainProcess/
+backup/
+备份/
+logs/
+tensorboard/
+
+# Data folders
+GBM/
+data/
+dataset/
+*.pt
+*.npy
+*.csv
+
+# Other large files
+*.zip
+*.tar
+*.tar.gz
