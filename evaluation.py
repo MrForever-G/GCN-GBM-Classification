@@ -1,18 +1,7 @@
 import numpy as np
-from sklearn.metrics import roc_auc_score, average_precision_score, f1_score, confusion_matrix, balanced_accuracy_score
+from sklearn.metrics import roc_auc_score, confusion_matrix
 import torch
-import pandas as pd
-import time 
 
-def save_record(patchID, y_true, y_probs):
-    record_dict = dict()
-    record_dict["patchID"] = patchID
-    record_dict["y_true"] = y_true
-    for i in range(y_probs.shape[1]):
-        record_dict["y_probs%d" % i] = y_probs[:, i]
-    record_df = pd.DataFrame.from_dict(record_dict)
-
-    return record_df
 
 def ensemble_patient(patientID, y_true, y_probs):
     # patientID: a list with patient id
@@ -35,31 +24,26 @@ def ensemble_patient(patientID, y_true, y_probs):
 
 
 def auc(target, score):
+    # 确保 target 是整数类型
+    target = target.astype(int)
     if len(set(target)) > 2:
         auc_ = roc_auc_score(target, score, average="macro", multi_class="ovr")
-    else:
+    elif len(set(target)) == 2:
+        # 对于二分类，score 应该是正类的概率
         auc_ = roc_auc_score(target, score[:, 1])
+    else:
+        # 如果只有一个类别，AUC没有意义，返回0.5
+        return 0.5
     return auc_
 
 
-def get_prec_sen_spec(y_true, y_pred):
-    tn, fp, fn, tp = confusion_matrix(y_true, y_pred).ravel()
-    sensitivity = tp / (tp + fn)
-    specificity = tn / (tn + fp)
-    if (tp + fp) == 0:
-        precision = 0
-    else:
-        precision = tp / (tp + fp)
-
-    return precision, sensitivity, specificity
-
-
+    
 def full_evaluation(y_true, y_probs):
     result = bootstrap_ap(y_true, y_probs, 1000, 0.95)
     return result
 
 
-def eval_model(model, loader, device):
+def eval_model(model, loader, device, model_wrapper=None):
     y_true = []
     y_probs = []
     patientID = []
@@ -70,7 +54,17 @@ def eval_model(model, loader, device):
             patientID_ = data.sample_id
             data = data.to(device)
             y = data.y
-            linear_prob = model(data)
+            
+            # ==========================================================
+            # 【修改点 2】: 使用 if/else 逻辑来调用模型，实现解耦
+            # ==========================================================
+            if model_wrapper:
+                # 如果提供了 wrapper，就用它来获取模型的分类输出
+                linear_prob = model_wrapper(model, data)
+            else:
+                # 否则，假设模型直接返回分类输出
+                linear_prob = model(data)
+            
             prob = torch.softmax(linear_prob, dim=1)
             
             y_probs.append(prob)

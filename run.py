@@ -1,7 +1,7 @@
 import numpy as np
 import torch
 from data_loader import GBMGraphDataset
-from torch_geometric.loader import DataLoader
+from torch_geometric.data import DataLoader
 from utils import check_dir, setup_seed, get_logger
 from train import train
 import torch.nn as nn
@@ -22,8 +22,8 @@ from models import TwinsGCN
 def params_setup():
     params = dict()
     params["in_chans"] = [768]
-    params["out_chans"] = [128]
-    params["heads"] = [32]
+    params["out_chans"] = [16]
+    params["heads"] = [8]
 
     return params
 
@@ -61,10 +61,7 @@ class TrainingConfig():
         self.scheduler = args.scheduler
         self.savedisk = args.savedisk
         self.smoothing = args.smoothing
-        self.lambda_tv = args.lambda_tv
-        self.tv_norm   = args.tv_norm
-        self.tv_reduce = args.tv_reduce
-        self.tv_unique = args.tv_unique
+
 
 
 
@@ -86,29 +83,27 @@ def main(args, model, model_architecture, time_tab):
     lr = args.lr
     smoothing = args.smoothing
     
+    
+    # gbm_tea/run.py (修改后的正确代码)
 
-    traindata = GBMGraphDataset(
-        data_dir="./GBM/postdata/train_test_split/train",
-        sample_info_csv="./GBM/clinical_data_processed.csv"
-    )
-    testdata = GBMGraphDataset(
-        data_dir="./GBM/postdata/train_test_split/test",
-        sample_info_csv="./GBM/clinical_data_processed.csv"
-    )
-
-
-
+    traindata = GBMGraphDataset(data_dir="./GBM/postdata/train_test_split/train", 
+                              sample_info_csv="./GBM/clinical_data_processed.csv",
+                              is_train=True) 
+    
+    testdata = GBMGraphDataset(data_dir="./GBM/postdata/train_test_split/test", 
+                              sample_info_csv="./GBM/clinical_data_processed.csv", # <--- 必须改回这个
+                              is_train=False)
     train_iter = DataLoader(traindata, batch_size=batch_size, shuffle=True)
     test_iter = DataLoader(testdata, batch_size=batch_size, shuffle=False)
     
     CE_loss = nn.CrossEntropyLoss(reduction="mean",label_smoothing=smoothing)
 
     if args.optim == "ADAM":
-        optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=0.01)
+        optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=1e-4)
     elif args.optim == "RMSprop":
         optimizer = torch.optim.RMSprop(model.parameters(), lr=lr, weight_decay=0.01)
     elif args.optim == "ADAMW":
-        optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=0.01)
+        optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=0.1)
     elif args.optim == "SGDNesterov":
         optimizer = torch.optim.SGD(model.parameters(), lr=lr, nesterov=True, weight_decay=0.01, momentum=0.01)
     else:
@@ -151,40 +146,28 @@ def main(args, model, model_architecture, time_tab):
 
 def parse_args():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--lr", type=float, dest="lr", default=3e-4, help="LEARNING RATE")   #3e-4 → 1e-4 → 1e-3
+    parser.add_argument("--lr", type=float, dest="lr", default=0.001, help="LEARNING RATE")
     parser.add_argument("--num_epochs", type=int, dest="num_epochs", default=200, help="NUM EPOCHS")
     parser.add_argument("--device", type=str, dest="device", default="cuda", help="DEVICE")
     parser.add_argument("--seed", type=int, dest="seed", default=None, help="RANDOM SEED")
     parser.add_argument("--batch_size", type=int, dest="batch_size", default=32, help="BATCH_SIZE")
-    parser.add_argument("--optim", type=str, dest="optim", default="ADAMW", help="OPTIMIZER")
+    parser.add_argument("--optim", type=str, dest="optim", default="adam", help="OPTIMIZER")
 
     
     parser.add_argument("--savedisk", type=bool, dest="savedisk", default=False, help="SAVE INTERMEDIATE OUTPUT")
     
     parser.add_argument("--milestone", type=str, dest="milestones", default="30_50", help="MILESTONES for MULTIPLE LR")
-    parser.add_argument("--lrgamma", type=float, dest="lrgamma", default=0.1, help="DECAY RATE OF LR")
+    parser.add_argument("--lrgamma", type=float, dest="lrgamma", default=0.001, help="DECAY RATE OF LR")
     
     parser.add_argument("--T_0", type=int, dest="T_0", default=10, help="T_0 FOR CosineAnnealingWarmRestarts")
     parser.add_argument("--T_mult", type=int, dest="T_mult", default=2, help="T_mult FOR CosineAnnealingWarmRestarts")
 
-    parser.add_argument("--T_max", type=int, dest="T_max", default=10, help="T_max FOR CosineAnnealing")
-    parser.add_argument("--max_lr", type=float, dest="max_lr", default=0.1, help="MAX LR FOR CyclicLR & OneCycleLR")
-    parser.add_argument("--scheduler", type=str, dest="scheduler", default="None", help="ACTIVATE scheduler")
+    parser.add_argument("--T_max", type=int, dest="T_max", default=5, help="T_max FOR CosineAnnealing")
+    parser.add_argument("--max_lr", type=float, dest="max_lr", default=0.001, help="MAX LR FOR CyclicLR & OneCycleLR")
+    parser.add_argument("--scheduler", type=str, dest="scheduler", default="CosineAnnealingLR", help="ACTIVATE scheduler")
     parser.add_argument("--last_epoch", type=int, dest="last_epoch", default=10, help="LAST EPOCH FOR EVAL")
 
     parser.add_argument("--smoothing", type=float, dest="smoothing", default=0.03, help="ALPHA FOR LABEL SMOOTHING")
-
-    parser.add_argument("--edge_mode", type=str, choices=["feature","corrd","both"], default="both")
-
-    parser.add_argument("--lambda_tv", type=float, default=0.0,
-        help="Weight of the graph Total Variation (TV) regularizer; set to 0 to disable.")
-    parser.add_argument("--tv_norm", type=str, default="l2sq", choices=["l1","l2","l2sq"],
-        help="Norm for TV: 'l1' (sum |x|), 'l2' (sqrt(sum x^2)), or 'l2sq' (sum x^2).")
-    parser.add_argument("--tv_reduce", type=str, default="mean", choices=["mean","sum"],
-        help="Reduction over edges for TV: 'mean' or 'sum' (mean recommended).")
-    parser.add_argument("--tv_unique", action="store_true",
-        help="Use only one direction of undirected edges (row < col) to avoid double-counting.")
-
 
     args = parser.parse_args()
 
@@ -206,19 +189,20 @@ if __name__ == "__main__":
     
 
     # activate tensorboard
-    command = "tensorboard --logdir=./TrainProcess/%s" % time_tab
-    process = subprocess.Popen(command)
+    log_dir = f"./TrainProcess/{time_tab}"
+    command_list = ["tensorboard", "--logdir", log_dir]
+    process = subprocess.Popen(command_list)
 
     # set model architecture
     model_architecture = params_setup()
-    model = TwinsGCN(in_channels=model_architecture["in_chans"][0], 
-                    heads=model_architecture["heads"][0], 
-                    out_channels=model_architecture["out_chans"][0], 
-                    class_num=2,
-                    edge_mode=args.edge_mode)
+    # run.py (修改后的正确代码)
+    model = TwinsGCN(coord_in_channels=2,  # 明确指定坐标分支的输入维度为 2
+                 feature_in_channels=model_architecture["in_chans"][0], 
+                 heads=model_architecture["heads"][0],
+                 out_channels=model_architecture["out_chans"][0],
+                 class_num=4)
 
-    test_last_epoch_mean = main(args, model, model_architecture, time_tab)
+    main(args, model, model_architecture, time_tab)
  
     time.sleep(30)
     process.kill()
-    print(command)
